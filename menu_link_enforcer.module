@@ -400,10 +400,44 @@ function _menu_link_enforcer_form_menu_overview_form_alter(&$form, &$form_state)
       if ($object = menu_get_object('node', 1, $form[$key]['#item']['link_path'])) {
         $wrapper = entity_metadata_wrapper('node', $object);
         if (isset($enforced_configs['node'][$wrapper->getBundle()])) {
+          $form[$key]['#menu_link_enforcer'] = $enforced_configs['node'][$wrapper->getBundle()];
           if ($enforced_configs['node'][$wrapper->getBundle()]->enforce) {
             if (isset($form[$key]['operations']['delete'])) {
               unset($form[$key]['operations']['delete']);
             }
+          }
+        }
+      }
+    }
+  }
+
+  $form['#validate'][] = '_menu_link_enforce_form_menu_overview_form_validate';
+}
+
+/**
+ * Form validation callback for the `menu_overview_form` form.
+ *
+ * Validates the menu link positions ensuring that any menu links that are
+ * being enforced with locked parents have validate parents in the event that
+ * they are re-arranged.
+ *
+ * @see _menu_link_enforcer_form_menu_overview_form_alter()
+ */
+function _menu_link_enforce_form_menu_overview_form_validate($form, &$form_state) {
+  foreach (element_children($form) as $key) {
+    if (isset($form[$key]['#menu_link_enforcer'])) {
+      if ($form_state['values'][$key]['plid'] != $form[$key]['#item']['plid']) {
+        if (!empty($form[$key]['#menu_link_enforcer']->parent_mlid) && $form_state['values'][$key]['plid'] != $form[$key]['#menu_link_enforcer']->parent_mlid) {
+          if (MENU_LINK_ENFORCER_MENU_PARENT_ROOT == $form[$key]['#menu_link_enforcer']->parent_mlid) {
+            form_set_error($key, t('The menu link titled %link_title is restricted to being a root level menu link.', array(
+              '%link_title' => check_plain($form[$key]['#item']['title']),
+            )));
+          }
+          else {
+            form_set_error($key, t('The menu link titled %link_title is restricted to being a direct child of %parent_link.', array(
+              '%link_title' => check_plain($form[$key]['#item']['title']),
+              '%parent_link' => check_plain($form['mlid:' . $form[$key]['#menu_link_enforcer']->parent_mlid]['#item']['title']),
+            )));
           }
         }
       }
