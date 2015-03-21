@@ -336,6 +336,21 @@ function _menu_link_enforcer_form_menu_edit_item_form_alter(&$form, &$form_state
   if (!empty($item) && $object = menu_get_object('node', 1, $item['link_path'])) {
     $wrapper = entity_metadata_wrapper('node', $object);
     if ($configuration = menu_link_enforcer_load_config_by_entity_bundle('node', $wrapper->getBundle())) {
+      if (!empty($configuration->parent_mlid)) {
+        $form['parent']['#disabled'] = TRUE;
+        list($menu_name, $default_plid) = explode(':', $form['parent']['#default_value']);
+        if (MENU_LINK_ENFORCER_MENU_PARENT_ROOT == $configuration->parent_mlid) {
+          $form['parent']['#default_value'] = $menu_name . ':0';
+        }
+        else {
+          $form['parent']['#default_value'] = $menu_name . ':' . $configuration->parent_mlid;
+        }
+
+        if ($default_plid != $configuration->parent_mlid) {
+          drupal_set_message(t('The parent menu item has been changed and set to the correct parent menu link.'), 'warning');
+        }
+      }
+
       if ($configuration->enforce) {
         $form['actions']['delete']['#disabled'] = TRUE;
         if (user_access('bypass menu link enforcer')) {
