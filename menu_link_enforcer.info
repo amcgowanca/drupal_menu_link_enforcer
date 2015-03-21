@@ -1,0 +1,4 @@
+name = Menu Link Enforcer
+description = Forces the creation of a menu link for new content as well as enforcing that it cannot be deleted unless the node is deleted.
+core = 7.x
+version = 7.x-1.x

@@ -1,0 +1,58 @@
+<?php
+/**
+ * @file
+ * menu_link_enforcer.install
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function menu_link_enforcer_schema() {
+  $schema = array();
+  $schema['menu_link_enforcer'] = array(
+    'description' => 'Stores information about the menu link enforcer configuration.',
+    'fields' => array(
+      'id' => array(
+        'description' => 'The primary key for this configuration entry.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'entity_type' => array(
+        'description' => 'The entity type this configuration relates to.',
+        'type' => 'varchar',
+        'length' => '255',
+        'not null' => TRUE,
+      ),
+      'bundle' => array(
+        'description' => 'The entity bundle machine name this configuration relates to.',
+        'type' => 'varchar',
+        'length' => '255',
+        'not null' => TRUE,
+      ),
+      'enforce' => array(
+        'description' => 'A boolean indicating whether or not this entity type bundle has a forced menu link.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 1,
+      ),
+      'parent_mlid' => array(
+        'description' => "The parent menu link identifier in which this entity type bundle's menu links must be a child of.",
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+    ),
+    'primary key' => array('id'),
+    'indexes' => array(
+      'entity_type' => array('entity_type'),
+      'bundle' => array('bundle'),
+    ),
+    'unique keys' => array(
+      'entity_bundle' => array('entity_type', 'bundle'),
+    ),
+  );
+  return $schema;
+}
+

@@ -1,0 +1,425 @@
+<?php
+/**
+ * @file
+ * menu_link_enforcer.module
+ */
+
+/**
+ * Denotes that the parent menu link locked at root.
+ */
+define('MENU_LINK_ENFORCER_MENU_PARENT_ROOT', -1);
+
+/**
+ * Implements hook_permission().
+ */
+function menu_link_enforcer_permission() {
+  return array(
+    'bypass menu link enforcer' => array(
+      'title' => t('Bypass menu link enforcer'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function menu_link_enforcer_form_alter(&$form, &$form_state, $form_id) {
+  if (FALSE !== strpos($form_id, '_node_form') && isset($form['#node_edit_form'])) {
+    $form_id = 'node_edit_form';
+  }
+
+  switch ($form_id) {
+    case 'node_type_form':
+      _menu_link_enforcer_form_node_type_form_alter($form, $form_state);
+      break;
+    case 'node_edit_form':
+      _menu_link_enforcer_form_node_edit_form_alter($form, $form_state);
+      break;
+    case 'menu_overview_form':
+      _menu_link_enforcer_form_menu_overview_form_alter($form, $form_state);
+      break;
+    case 'menu_item_delete_form':
+      _menu_link_enforcer_form_menu_item_delete_form_alter($form, $form_state);
+      break;
+    case 'menu_edit_item':
+      _menu_link_enforcer_form_menu_edit_item_form_alter($form, $form_state);
+      break;
+  }
+}
+
+/**
+ * Implements hook_node_type_delete().
+ */
+function menu_link_enforcer_node_type_delete($info) {
+  menu_link_enforcer_delete_config_by_entity_bundle('node', $info->type);
+}
+
+/**
+ * Load a single configuration by its identifier.
+ *
+ * @param int $id
+ *   The identifier of the configuration to load.
+ *
+ * @return mixed
+ *   Returns the configuration if exists, otherwise returns FALSE.
+ */
+function menu_link_enforcer_load_config($id) {
+  $configurations = menu_link_enforcer_load_multiple_config(array($id));
+  return $configurations[$id];
+}
+
+/**
+ * Load a set of configurations by their identifiers.
+ *
+ * @param array $ids
+ *   An array of configuration identifiers to load.
+ *
+ * @return array
+ *   Returns an array of loaded configurations keyed by their identifier.
+ */
+function menu_link_enforcer_load_multiple_config(array $ids = array()) {
+  $configurations = &_menu_link_enforcer_configurations();
+  $load_ids = array();
+  $condition = 'IN';
+  if (!empty($ids)) {
+    foreach ($ids as $id) {
+      if (!isset($configurations['data'][$id])) {
+        $load_ids[] = $id;
+      }
+    }
+  }
+  else {
+    if (!empty($configurations)) {
+      $load_ids = array_keys($configurations['data']);
+    }
+    $condition = 'NOT IN';
+  }
+
+  $query = db_select('menu_link_enforcer', 'mle')
+    ->fields('mle');
+  if (!empty($load_ids)) {
+    $query->condition('mle.id', $load_ids, $condition);
+  }
+  $query = $query->execute();
+  while ($result = $query->fetchObject()) {
+    $configurations['data'][$result->id] = $result;
+    if (!isset($configurations['keys'][$result->entity_type])) {
+      $configurations['keys'][$result->entity_type] = array();
+    }
+    $configurations['keys'][$result->entity_type][$result->bundle] = $result->id;
+  }
+
+  if (!empty($ids)) {
+    $return = array();
+    foreach ($ids as $id) {
+      $return[$id] = isset($configurations['data'][$id]) ? $configurations['data'][$id] : FALSE;
+    }
+    return $return;
+  }
+
+  return $configurations['data'];
+}
+
+/**
+ * Load a single configuration by entity type and bundle.
+ *
+ * @param string $entity_type
+ *   The entity type of the configuration to load.
+ * @param string $bundle
+ *   The entity bundle of the configuration to load.
+ *
+ * @return mixed
+ *   Returns the configuration if exists, otherwise returns FALSE.
+ */
+function menu_link_enforcer_load_config_by_entity_bundle($entity_type, $bundle) {
+  $configurations = &_menu_link_enforcer_configurations();
+  if (!isset($configurations['keys'][$entity_type]) || isset($configurations['keys'][$entity_type]) && !isset($configurations['keys'][$entity_type][$bundle])) {
+    if (!isset($configurations['keys'][$entity_type])) {
+      $configurations['keys'][$entity_type] = array();
+    }
+
+    $query = db_select('menu_link_enforcer', 'mle')
+      ->fields('mle')
+      ->condition('mle.entity_type', $entity_type)
+      ->condition('mle.bundle', $bundle)
+      ->execute();
+    if ($result = $query->fetchObject()) {
+      $configurations['data'][$result->id] = $result;
+      $configurations['keys'][$result->entity_type][$result->bundle] = $result->id;
+    }
+    else {
+      $configurations['keys'][$entity_type][$bundle] = FALSE;
+    }
+  }
+  return !empty($configurations['keys'][$entity_type][$bundle]) ? $configurations['data'][$configurations['keys'][$entity_type][$bundle]] : FALSE;
+}
+
+/**
+ * Saves a configuration object.
+ *
+ * @param object $config
+ *   The configuration object to save.
+ *
+ * @throws Exception
+ *   Throws any exception caught during the saving (insert or update).
+ */
+function menu_link_enforcer_config_save($config) {
+  $transaction = db_transaction();
+  try {
+    $is_new = !empty($config->id) ? FALSE : TRUE;
+
+    drupal_write_record('menu_link_enforcer', $config, $is_new ? array() : array('id'));
+
+    $configurations = &_menu_link_enforcer_configurations();
+    $configurations['data'][$config->id] = $config;
+    if (!isset($configurations['keys'][$config->entity_type])) {
+      $configurations['keys'][$config->entity_type] = array();
+    }
+    $configurations['keys'][$config->entity_type][$config->bundle] = $config->id;
+  }
+  catch (Exception $e) {
+    $transaction->rollback();
+    throw $e;
+  }
+}
+
+/**
+ * Deletes a configuration item by specifying the identifier.
+ *
+ * @param int $id
+ *   The identifier of the configuration to delete.
+ *
+ * @throws Exception
+ *   Throws any exception caught during delete.
+ */
+function menu_link_enforcer_delete_config($id) {
+  $transaction = db_transaction();
+  try {
+    db_delete('menu_link_enforcer')
+      ->condition('id', $id)
+      ->execute();
+    $configurations = &_menu_link_enforcer_configurations();
+    if (!empty($configurations['data'][$id])) {
+      unset($configurations['keys'][$configurations['data'][$id]->entity_type][$configurations['data'][$id]->bundle]);
+      unset($configurations['data'][$id]);
+    }
+  }
+  catch (Exception $e) {
+    $transaction->rollback();
+    throw $e;
+  }
+}
+
+/**
+ * Deletes a configuration item by specifying the entity type and bundle.
+ *
+ * @param string $entity_type
+ *   The entity type of the configuration to delete.
+ * @param string $bundle
+ *   The entity type's bundle of the configuration to delete.
+ *
+ * @throws Exception
+ *   Throws any exception caught during delete.
+ */
+function menu_link_enforcer_delete_config_by_entity_bundle($entity_type, $bundle) {
+  $transaction = db_transaction();
+  try {
+    db_delete('menu_link_enforcer')
+      ->condition('entity_type', $entity_type)
+      ->condition('bundle', $bundle)
+      ->execute();
+    $configurations = &_menu_link_enforcer_configurations();
+    if (!empty($configurations['keys'][$entity_type][$bundle])) {
+      unset($configurations['data'][$configurations['keys'][$entity_type][$bundle]]);
+      unset($configurations['keys'][$entity_type][$bundle]);
+    }
+  }
+  catch (Exception $e) {
+    $transaction->rollback();
+    throw $e;
+  }
+}
+
+/**
+ * Form builder callback for the `node_type_form` form.
+ *
+ * @see menu_link_enforcer_form_alter()
+ */
+function _menu_link_enforcer_form_node_type_form_alter(&$form, &$form_state) {
+  $configuration = menu_link_enforcer_load_config_by_entity_bundle('node', $form['#node_type']->type);
+  $form['menu']['menu_link_enforcer_enforce'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Make the Menu Settings mandatory for this content type'),
+    '#description' => t('Enabling this will enforce menu links for this content type.'),
+    '#default_value' => !empty($configuration->enforce) ? ((bool) $configuration->enforce) : FALSE,
+  );
+  $form['menu']['menu_link_enforcer_lock_parent'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Lock the "Default parent item" item'),
+    '#description' => t('Enabling this will enforce that the primary menu link created for a node is a child of the chosen parent menu link.'),
+    '#default_value' => !empty($configuration->parent_mlid) ? TRUE : FALSE,
+    '#states' => array(
+      'invisible' => array(
+        'input[name=menu_link_enforcer_enforce]' => array('checked' => FALSE),
+      ),
+    ),
+  );
+  $form['#submit'][] = '_menu_link_enforcer_form_node_type_form_submit';
+}
+
+/**
+ * Form submit callback for the `node_type_form` form.
+ *
+ * @see _menu_link_enforcer_form_node_type_form_alter().
+ */
+function _menu_link_enforcer_form_node_type_form_submit($form, &$form_state) {
+  $type = $form['#node_type'];
+  // Handle the use case in which the node type's machine name has been renamed.
+  // This is similar to a node type being deleted, however, the
+  // hook_node_type_delete does not get invoked.
+  if ($form_state['values']['type'] != $type->type) {
+    menu_link_enforcer_delete_config_by_entity_bundle('node', $type->type);
+    $deleted = TRUE;
+  }
+  unset($type);
+
+  if (!isset($deleted)) {
+    $config = menu_link_enforcer_load_config_by_entity_bundle('node', $form_state['values']['type']);
+    $config = !empty($config) ? $config : new stdClass;
+  }
+  else {
+    $config = new stdClass;
+  }
+
+  $config->entity_type = 'node';
+  $config->bundle = $form_state['values']['type'];
+  $config->enforce = (bool) $form_state['values']['menu_link_enforcer_enforce'];
+
+  if (!empty($form_state['values']['menu_link_enforcer_lock_parent'])) {
+    list(, $parent_mlid) = explode(':', $form_state['values']['menu_parent']);
+    $config->parent_mlid = empty($parent_mlid) ? MENU_LINK_ENFORCER_MENU_PARENT_ROOT : $parent_mlid;
+  }
+  else {
+    $config->parent_mlid = 0;
+  }
+
+  menu_link_enforcer_config_save($config);
+}
+
+/**
+ * Form builder callback for the `node_edit_form` form.
+ *
+ * @see menu_link_enforcer_form_alter()
+ */
+function _menu_link_enforcer_form_node_edit_form_alter(&$form, &$form_state) {
+  if ($configuration = menu_link_enforcer_load_config_by_entity_bundle('node', $form['#node']->type)) {
+    if ($configuration['enforce']) {
+      $form['menu']['enabled'] = array(
+        '#type' => 'value',
+        '#value' => TRUE,
+      );
+      $form['menu']['link']['link_title']['#required'] = TRUE;
+      if (!empty($configuration['parent_mlid'])) {
+        $form['menu']['link']['parent']['#disabled'] = TRUE;
+      }
+    }
+  }
+}
+
+/**
+ * Form builder callback for the `menu_edit_item` form.
+ *
+ * @see menu_link_enforcer_form_alter()
+ */
+function _menu_link_enforcer_form_menu_edit_item_form_alter(&$form, &$form_state) {
+  $item = &$form['original_item']['#value'];
+  if (!empty($item) && $object = menu_get_object('node', 1, $item['link_path'])) {
+    $wrapper = entity_metadata_wrapper('node', $object);
+    if ($configuration = menu_link_enforcer_load_config_by_entity_bundle('node', $wrapper->getBundle())) {
+      if ($configuration->enforce) {
+        $form['actions']['delete']['#disabled'] = TRUE;
+        if (user_access('bypass menu link enforcer')) {
+          $form['actions']['force_delete'] = array(
+            '#type' => 'submit',
+            '#value' => t('Force delete'),
+            '#access' => $item['mlid'],
+            '#submit' => array('menu_item_delete_submit'),
+            '#weight' => 100,
+          );
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Form builder callback for the `menu_item_delete` form.
+ *
+ * @see menu_link_enforcer_form_alter()
+ */
+function _menu_link_enforcer_form_menu_item_delete_form_alter(&$form, &$form_state) {
+  if ($object = menu_get_object('node', 1, $form['#item']['link_path'])) {
+    $wrapper = entity_metadata_wrapper('node', $object);
+    if ($configuration = menu_link_enforcer_load_config_by_entity_bundle('node', $wrapper->getBundle())) {
+      if ($configuration->enforce) {
+        $form['description']['#markup'] = t('This menu link cannot be deleted because it is required by the node which it links to.');
+        if (user_access('bypass menu link enforcer')) {
+          $form['description']['#markup'] .= '<br />' . t('<strong>Warning:</strong> By force deleting this menu link, the node will no longer exist within with a valid menu link.');
+          $form['actions']['force_delete'] = array(
+            '#type' => 'submit',
+            '#value' => t('Yes, force delete'),
+            '#weight' => 10,
+          );
+          $form['actions']['submit']['#value'] = t('Delete');
+        }
+        $form['actions']['submit']['#disabled'] = TRUE;
+        $form['actions']['submit']['#weight'] = 1;
+        $form['actions']['cancel']['#weight'] = 20;
+      }
+    }
+  }
+}
+
+/**
+ * Form builder callback for the `menu_overview_form` form.
+ *
+ * @see menu_link_enforcer_form_alter()
+ */
+function _menu_link_enforcer_form_menu_overview_form_alter(&$form, &$form_state) {
+  $configurations = menu_link_enforcer_load_multiple_config();
+  $enforced_configs = array();
+  foreach ($configurations as $config_id => $config) {
+    if ($config->enforce) {
+      $enforced_configs[$config->entity_type][$config->bundle] = $config;
+    }
+  }
+
+  if (!empty($enforced_configs)) {
+    foreach (element_children($form) as $key) {
+      // TODO: Determine how this can be leveraged for all and any entity types.
+      if ($object = menu_get_object('node', 1, $form[$key]['#item']['link_path'])) {
+        $wrapper = entity_metadata_wrapper('node', $object);
+        if (isset($enforced_configs['node'][$wrapper->getBundle()])) {
+          if ($enforced_configs['node'][$wrapper->getBundle()]->enforce) {
+            if (isset($form[$key]['operations']['delete'])) {
+              unset($form[$key]['operations']['delete']);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Returns runtime statically cached configurations.
+ *
+ * @return array
+ *   An associative array of static cache data.
+ */
+function &_menu_link_enforcer_configurations() {
+  return drupal_static('menu_link_enforcer_configurations', array(
+    'data' => array(),
+    'keys' => array(),
+  ));
+}
