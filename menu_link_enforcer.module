@@ -313,14 +313,20 @@ function _menu_link_enforcer_form_node_type_form_submit($form, &$form_state) {
  */
 function _menu_link_enforcer_form_node_edit_form_alter(&$form, &$form_state) {
   if ($configuration = menu_link_enforcer_load_config_by_entity_bundle('node', $form['#node']->type)) {
-    if ($configuration['enforce']) {
+    if ($configuration->enforce) {
       $form['menu']['enabled'] = array(
         '#type' => 'value',
         '#value' => TRUE,
       );
       $form['menu']['link']['link_title']['#required'] = TRUE;
-      if (!empty($configuration['parent_mlid'])) {
+      if (!empty($configuration->parent_mlid)) {
         $form['menu']['link']['parent']['#disabled'] = TRUE;
+        $parent = MENU_LINK_ENFORCER_MENU_PARENT_ROOT == $configuration->parent_mlid ? 0 : $configuration->parent_mlid;
+        list($menu_name, $plid) = explode(':', $form['menu']['link']['parent']['#default_value']);
+        if ($parent != $plid) {
+          $form['menu']['link']['parent']['#default_value'] = $menu_name . ':' . $parent;
+          drupal_set_message(t('The parent menu item has been changed and set to the correct parent menu link.'), 'warning');
+        }
       }
     }
   }
@@ -336,31 +342,36 @@ function _menu_link_enforcer_form_menu_edit_item_form_alter(&$form, &$form_state
   if (!empty($item) && $object = menu_get_object('node', 1, $item['link_path'])) {
     $wrapper = entity_metadata_wrapper('node', $object);
     if ($configuration = menu_link_enforcer_load_config_by_entity_bundle('node', $wrapper->getBundle())) {
-      if (!empty($configuration->parent_mlid)) {
-        $form['parent']['#disabled'] = TRUE;
-        list($menu_name, $default_plid) = explode(':', $form['parent']['#default_value']);
-        if (MENU_LINK_ENFORCER_MENU_PARENT_ROOT == $configuration->parent_mlid) {
-          $form['parent']['#default_value'] = $menu_name . ':0';
-        }
-        else {
-          $form['parent']['#default_value'] = $menu_name . ':' . $configuration->parent_mlid;
+      menu_node_prepare($object);
+      if ($object->menu['mlid'] == $item['mlid']) {
+        if (!empty($configuration->parent_mlid)) {
+          $form['parent']['#disabled'] = TRUE;
+          list($menu_name, $default_plid) = explode(':', $form['parent']['#default_value']);
+          if (MENU_LINK_ENFORCER_MENU_PARENT_ROOT == $configuration->parent_mlid) {
+            $form['parent']['#default_value'] = $menu_name . ':0';
+            $parent_mlid = 0;
+          }
+          else {
+            $form['parent']['#default_value'] = $menu_name . ':' . $configuration->parent_mlid;
+            $parent_mlid = $configuration->parent_mlid;
+          }
+
+          if ($default_plid != $parent_mlid) {
+            drupal_set_message(t('The parent menu item has been changed and set to the correct parent menu link.'), 'warning');
+          }
         }
 
-        if ($default_plid != $configuration->parent_mlid) {
-          drupal_set_message(t('The parent menu item has been changed and set to the correct parent menu link.'), 'warning');
-        }
-      }
-
-      if ($configuration->enforce) {
-        $form['actions']['delete']['#disabled'] = TRUE;
-        if (user_access('bypass menu link enforcer')) {
-          $form['actions']['force_delete'] = array(
-            '#type' => 'submit',
-            '#value' => t('Force delete'),
-            '#access' => $item['mlid'],
-            '#submit' => array('menu_item_delete_submit'),
-            '#weight' => 100,
-          );
+        if ($configuration->enforce) {
+          $form['actions']['delete']['#disabled'] = TRUE;
+          if (user_access('bypass menu link enforcer')) {
+            $form['actions']['force_delete'] = array(
+              '#type' => 'submit',
+              '#value' => t('Force delete'),
+              '#access' => $item['mlid'],
+              '#submit' => array('menu_item_delete_submit'),
+              '#weight' => 100,
+            );
+          }
         }
       }
     }
@@ -376,20 +387,23 @@ function _menu_link_enforcer_form_menu_item_delete_form_alter(&$form, &$form_sta
   if ($object = menu_get_object('node', 1, $form['#item']['link_path'])) {
     $wrapper = entity_metadata_wrapper('node', $object);
     if ($configuration = menu_link_enforcer_load_config_by_entity_bundle('node', $wrapper->getBundle())) {
-      if ($configuration->enforce) {
-        $form['description']['#markup'] = t('This menu link cannot be deleted because it is required by the node which it links to.');
-        if (user_access('bypass menu link enforcer')) {
-          $form['description']['#markup'] .= '<br />' . t('<strong>Warning:</strong> By force deleting this menu link, the node will no longer exist within with a valid menu link.');
-          $form['actions']['force_delete'] = array(
-            '#type' => 'submit',
-            '#value' => t('Yes, force delete'),
-            '#weight' => 10,
-          );
-          $form['actions']['submit']['#value'] = t('Delete');
+      menu_node_prepare($object);
+      if (!empty($object->menu['mlid']) && $object->menu['mlid'] == $form['#item']['mlid']) {
+        if ($configuration->enforce) {
+          $form['description']['#markup'] = t('This menu link cannot be deleted because it is required by the node which it links to.');
+          if (user_access('bypass menu link enforcer')) {
+            $form['description']['#markup'] .= '<br />' . t('<strong>Warning:</strong> By force deleting this menu link, the node will no longer exist within with a valid menu link unless another menu link exists which can be used as the primary menu link for the node.');
+            $form['actions']['force_delete'] = array(
+              '#type' => 'submit',
+              '#value' => t('Yes, force delete'),
+              '#weight' => 10,
+            );
+            $form['actions']['submit']['#value'] = t('Delete');
+          }
+          $form['actions']['submit']['#disabled'] = TRUE;
+          $form['actions']['submit']['#weight'] = 1;
+          $form['actions']['cancel']['#weight'] = 20;
         }
-        $form['actions']['submit']['#disabled'] = TRUE;
-        $form['actions']['submit']['#weight'] = 1;
-        $form['actions']['cancel']['#weight'] = 20;
       }
     }
   }
@@ -413,12 +427,15 @@ function _menu_link_enforcer_form_menu_overview_form_alter(&$form, &$form_state)
     foreach (element_children($form) as $key) {
       // TODO: Determine how this can be leveraged for all and any entity types.
       if ($object = menu_get_object('node', 1, $form[$key]['#item']['link_path'])) {
-        $wrapper = entity_metadata_wrapper('node', $object);
-        if (isset($enforced_configs['node'][$wrapper->getBundle()])) {
-          $form[$key]['#menu_link_enforcer'] = $enforced_configs['node'][$wrapper->getBundle()];
-          if ($enforced_configs['node'][$wrapper->getBundle()]->enforce) {
-            if (isset($form[$key]['operations']['delete'])) {
-              unset($form[$key]['operations']['delete']);
+        menu_node_prepare($object);
+        if (!empty($object->menu) && !empty($object->menu['mlid']) && $object->menu['mlid'] == $form[$key]['#item']['mlid']) {
+          $wrapper = entity_metadata_wrapper('node', $object);
+          if (isset($enforced_configs['node'][$wrapper->getBundle()])) {
+            $form[$key]['#menu_link_enforcer'] = $enforced_configs['node'][$wrapper->getBundle()];
+            if ($enforced_configs['node'][$wrapper->getBundle()]->enforce) {
+              if (isset($form[$key]['operations']['delete'])) {
+                unset($form[$key]['operations']['delete']);
+              }
             }
           }
         }
